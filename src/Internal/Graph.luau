@@ -1,4 +1,3 @@
---!native
 local Signal = require(script.Parent.Parent.Parent.Signal)
 
 local _T = require(script.Parent.Types)
