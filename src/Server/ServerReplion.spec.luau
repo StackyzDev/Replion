@@ -78,10 +78,10 @@ describe('ServerReplion:Destroy', function()
 		})
 
 		local connections = {
-			newReplion:OnChange('onChange', function() end),
-			newReplion:OnArrayInsert('onArrayInsert', function() end),
-			newReplion:OnArrayRemove('onArrayRemove', function() end),
-			newReplion:OnDataChange(function() end),
+			newReplion:Changed('onChange', function() end),
+			newReplion:Inserted('onArrayInsert', function() end),
+			newReplion:Removed('onArrayRemove', function() end),
+			newReplion:DataChanged(function() end),
 			newReplion:BeforeDestroy(function() end),
 		}
 
@@ -199,7 +199,7 @@ describe('ServerReplion:Set', function()
 		expect(newReplion:Get('Foo')).toBe(true)
 	end)
 
-	it('should call the OnChange signal', function()
+	it('should call the Changed signal', function()
 		local newReplion = ReplionServer.new({
 			Data = {
 				Daily = {
@@ -211,7 +211,7 @@ describe('ServerReplion:Set', function()
 				},
 			},
 
-			Channel = 'SetOnChange',
+			Channel = 'SetChanged',
 			ReplicateTo = 'All',
 			Tags = {},
 		})
@@ -219,20 +219,20 @@ describe('ServerReplion:Set', function()
 		local fnMock = jest.fn()
 		local fnMock2 = jest.fn()
 
-		newReplion:OnChange('Foo', fnMock)
+		newReplion:Changed('Foo', fnMock)
 		newReplion:Set('Foo', true)
 
 		expect(fnMock).toHaveBeenCalledWith(true, nil)
 
-		newReplion:OnChange('Daily.Quests', fnMock2)
+		newReplion:Changed('Daily.Quests', fnMock2)
 		newReplion:Set({ 'Daily', 'Quests', 1, 'id' }, '8765-4321')
 
 		expect(fnMock2).toHaveBeenCalledWith({ [1] = { id = '8765-4321' } }, { [1] = { id = '1234-5678' } })
 	end)
 
-	it('should call the OnChange signal once when some values change', function()
+	it('should call the Changed signal once when some values change', function()
 		local newReplion = ReplionServer.new({
-			Channel = 'SetOnChangeOnce',
+			Channel = 'SetChangedOnce',
 			ReplicateTo = 'All',
 			Tags = {},
 			Data = { A = {} },
@@ -240,15 +240,15 @@ describe('ServerReplion:Set', function()
 
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('A', fnMock)
+		newReplion:Changed('A', fnMock)
 		newReplion:Set('A', { { 1 } })
 
 		expect(fnMock).toHaveBeenCalledTimes(1)
 	end)
 
-	it('should call the OnChange signal if an value inside a table changes', function()
+	it('should call the Changed signal if an value inside a table changes', function()
 		local newReplion = ReplionServer.new({
-			Channel = 'SetOnChangeNested',
+			Channel = 'SetChangedNested',
 			ReplicateTo = 'All',
 			Tags = {},
 			Data = { A = { B = { C = true } } },
@@ -256,7 +256,7 @@ describe('ServerReplion:Set', function()
 
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('A', fnMock)
+		newReplion:Changed('A', fnMock)
 
 		newReplion:Set('A.B.C', false)
 
@@ -347,7 +347,7 @@ describe('ServerReplion:Clear', function()
 		expect(newReplion:Get('Array')).toEqual({})
 	end)
 
-	it('should call the OnChange signal', function()
+	it('should call the Changed signal', function()
 		local newReplion = ReplionServer.new({
 			Data = { Array = { 1, 2, 3 } },
 
@@ -358,7 +358,7 @@ describe('ServerReplion:Clear', function()
 
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('Array', fnMock)
+		newReplion:Changed('Array', fnMock)
 		newReplion:Clear('Array')
 
 		expect(fnMock).toHaveBeenCalledWith({}, { 1, 2, 3 })
@@ -427,19 +427,19 @@ describe('ServerReplion:Remove', function()
 	end)
 end)
 
-describe('ServerReplion:OnChange', function()
-	it('should connect the OnChange signal', function()
+describe('ServerReplion:Changed', function()
+	it('should connect the Changed signal', function()
 		local newReplion = ReplionServer.new({
 			Data = {},
 
-			Channel = 'OnChange',
+			Channel = 'Changed',
 			ReplicateTo = 'All',
 			Tags = {},
 		})
 
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('Foo', fnMock)
+		newReplion:Changed('Foo', fnMock)
 		newReplion:Set('Foo', true)
 
 		expect(fnMock).toHaveBeenCalledWith(true, nil)
@@ -449,14 +449,14 @@ describe('ServerReplion:OnChange', function()
 		local newReplion = ReplionServer.new({
 			Data = { A = { B = { C = true } } },
 
-			Channel = 'OnChangeNested',
+			Channel = 'ChangedNested',
 			ReplicateTo = 'All',
 			Tags = {},
 		})
 
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('A', fnMock)
+		newReplion:Changed('A', fnMock)
 
 		newReplion:Set('A.B.C', false)
 		newReplion:Set('A.B', { D = true })
@@ -468,56 +468,56 @@ describe('ServerReplion:OnChange', function()
 	end)
 end)
 
-describe('ServerReplion:OnArrayInsert', function()
+describe('ServerReplion:Inserted', function()
 	it('should call the callback if an value inside a table changes', function()
 		local newReplion = ReplionServer.new({
 			Data = { Array = { 1, 2, 3 } },
 
-			Channel = 'OnArrayInsert',
+			Channel = 'Inserted',
 			ReplicateTo = 'All',
 			Tags = {},
 		})
 
 		local fnMock = jest.fn()
 
-		newReplion:OnArrayInsert('Array', fnMock)
+		newReplion:Inserted('Array', fnMock)
 		newReplion:Insert('Array', 2, 4)
 
 		expect(fnMock).toHaveBeenCalledWith(4, 2)
 	end)
 end)
 
-describe('ServerReplion:OnArrayRemove', function()
+describe('ServerReplion:Removed', function()
 	it('should call the callback if an value inside a table changes', function()
 		local newReplion = ReplionServer.new({
 			Data = { Array = { 1, 2, 3 } },
 
-			Channel = 'OnArrayRemove',
+			Channel = 'Removed',
 			ReplicateTo = 'All',
 			Tags = {},
 		})
 
 		local fnMock = jest.fn()
 
-		newReplion:OnArrayRemove('Array', fnMock)
+		newReplion:Removed('Array', fnMock)
 		newReplion:Remove('Array', 2)
 
 		expect(fnMock).toHaveBeenCalledWith(2, 2)
 	end)
 end)
 
-describe('ServerReplion:OnDataChange', function()
+describe('ServerReplion:DataChanged', function()
 	it('should call the callback if the data changes', function()
 		local newReplion = ReplionServer.new({
 			Data = {},
 
-			Channel = 'OnDataChange',
+			Channel = 'DataChanged',
 			ReplicateTo = 'All',
 			Tags = {},
 		})
 
 		local fnMock = jest.fn()
-		newReplion:OnDataChange(fnMock)
+		newReplion:DataChanged(fnMock)
 
 		newReplion:Set('Foo', true)
 		newReplion:Set('Bar', { Baz = 0 })
@@ -528,7 +528,7 @@ describe('ServerReplion:OnDataChange', function()
 end)
 
 describe('ServerReplion:Update', function()
-	it('should update the value of the Replion', function()
+	it('should update the value of the Replion via callback', function()
 		local newReplion = ReplionServer.new({
 			Data = { Foo = true, ToRemoved = 0 },
 
@@ -537,30 +537,52 @@ describe('ServerReplion:Update', function()
 			Tags = {},
 		})
 
-		newReplion:Update({
-			Foo = false,
-			Bar = {},
-			ToRemoved = Replion.None,
-		})
+		newReplion:Update('', function(current)
+			return {
+				Foo = false,
+				Bar = {},
+				ToRemoved = Replion.None,
+			}
+		end)
 
 		expect(newReplion:Get('Foo')).toBe(false)
 		expect(newReplion:Get('Bar')).toEqual({})
 	end)
 
-	it('should call the OnChange signal', function()
+	it('should call the Changed signal', function()
 		local newReplion = ReplionServer.new({
 			Data = { Foo = true },
 
-			Channel = 'UpdateOnChange',
+			Channel = 'UpdateChanged',
 			ReplicateTo = 'All',
 			Tags = {},
 		})
 
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('Foo', fnMock)
-		newReplion:Update({ Foo = false })
+		newReplion:Changed('Foo', fnMock)
+		newReplion:Update('', function(current)
+			return { Foo = false }
+		end)
 
 		expect(fnMock).toHaveBeenCalledWith(false, true)
+	end)
+
+	it('should pass the current value to the callback', function()
+		local newReplion = ReplionServer.new({
+			Data = { Items = { Sword = true } },
+
+			Channel = 'UpdateCallback',
+			ReplicateTo = 'All',
+			Tags = {},
+		})
+
+		local received
+		newReplion:Update('Items', function(current)
+			received = current
+			return current
+		end)
+
+		expect(received).toEqual({ Sword = true })
 	end)
 end)

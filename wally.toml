@@ -1,10 +1,10 @@
 [package]
-name = "ytrev/replion"
+name = "stackyzdev/replion"
 description = "A lightweight State Replicator."
-version = "2.0.1"
+version = "4.1.0"
 registry = "https://github.com/UpliftGames/wally-index"
 realm = "shared"
-authors = ["yTrev"]
+authors = ["yTrev", "StackyzDev"]
 exclude = ["**"]
 include = ["src", "src/**", "wally.toml", "default.project.json"]
 

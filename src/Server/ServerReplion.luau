@@ -10,6 +10,8 @@ local _T = require(script.Parent.Parent.Internal.Types)
 
 local Freeze = require(script.Parent.Parent.Parent.Freeze)
 
+type UpdateCallback<V> = (currentValue: V) -> V
+
 export type ServerReplionData<D = any> = {
 	Channel: string,
 	Data: D,
@@ -18,6 +20,7 @@ export type ServerReplionData<D = any> = {
 	ReplicateTo: _T.ReplicateTo,
 
 	_beforeDestroy: Signal.Signal<nil>,
+	_afterDestroy: Signal.Signal<nil>,
 	_rootNode: Graph.Node?,
 	_replicateToChanged: Signal.Signal<_T.ReplicateTo, _T.ReplicateTo>,
 
@@ -26,9 +29,10 @@ export type ServerReplionData<D = any> = {
 
 	new: <T>(config: ReplionConfig<T>) -> ServerReplion<D>,
 	BeforeDestroy: (self: ServerReplion<D>, callback: () -> ()) -> Signal.Connection,
+	AfterDestroy: (self: ServerReplion<D>, callback: () -> ()) -> Signal.Connection,
 
-	OnDataChange: (self: ServerReplion<D>, callback: (newData: D, path: _T.Path) -> ()) -> Signal.Connection,
-	OnChange: <T>(
+	DataChanged: (self: ServerReplion<D>, callback: (newData: D, path: _T.Path) -> ()) -> Signal.Connection,
+	Changed: <T>(
 		self: ServerReplion<D>,
 		path: _T.Path,
 		callback: (newValue: T, oldValue: T) -> ()
@@ -36,16 +40,20 @@ export type ServerReplionData<D = any> = {
 	Observe: <T>(
 		self: ServerReplion<D>,
 		path: _T.Path,
-		callback: (newValue: T, oldValue: T) -> ()
+		callback: (newValue: T, oldValue: T?) -> ()
 	) -> Signal.Connection,
 
-	OnArrayInsert: (self: ServerReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
-	OnArrayRemove: (self: ServerReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
+	Inserted: (self: ServerReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
+	Removed: (self: ServerReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
 
-	SetReplicateTo: (self: ServerReplion<D>, replicateTo: _T.ReplicateTo) -> (),
+	Subscribe: (self: ServerReplion<D>, player: Player) -> (),
+	SubscribeAll: (self: ServerReplion<D>) -> (),
+	Unsubscribe: (self: ServerReplion<D>, player: Player) -> (),
+	UnsubscribeAll: (self: ServerReplion<D>) -> (),
+	Replicate: (self: ServerReplion<D>) -> (),
 
 	Set: <T>(self: ServerReplion<D>, path: _T.Path, newValue: T) -> T,
-	Update: (self: ServerReplion<D>, path: _T.Path | any, toUpdate: _T.Dictionary?) -> (),
+	Update: <V>(self: ServerReplion<D>, path: _T.Path, callback: UpdateCallback<V>) -> (),
 
 	Increase: (self: ServerReplion<D>, path: _T.Path, amount: number) -> number,
 	Decrease: (self: ServerReplion<D>, path: _T.Path, amount: number) -> number,
@@ -60,6 +68,7 @@ export type ServerReplionData<D = any> = {
 
 	Destroy: (self: ServerReplion<D>) -> (),
 
+	SetReplicateTo: (self: ServerReplion<D>, replicateTo: _T.ReplicateTo) -> (),
 	_serialize: (self: ServerReplion<D>) -> _T.SerializedReplion,
 	__tostring: (self: ServerReplion<D>) -> string,
 }
@@ -179,6 +188,7 @@ function ServerReplion.new<D>(config: ReplionConfig<D>): ServerReplion<D>
 		_id = selectedId,
 		_packedId = utf8.char(selectedId),
 		_beforeDestroy = Signal.new(),
+		_afterDestroy = Signal.new(),
 		_rootNode = Graph.createRootNode(),
 		_replicateToChanged = Signal.new(),
 	}, ServerReplion) :: any
@@ -235,13 +245,24 @@ function ServerReplion:BeforeDestroy(callback)
 end
 
 --[=[
+	@param callback () -> ()
+
+	@return RBXScriptConnection
+
+	Connects to a signal that is fired after the :Destroy() method completes.
+]=]
+function ServerReplion:AfterDestroy(callback)
+	return self._afterDestroy:Connect(callback)
+end
+
+--[=[
 	@param callback (newData: any, path: Path) -> ()
 
 	@return RBXScriptConnection
 
-	Connects to a signal that is fired when a value is changed in the data. 
+	Connects to a signal that is fired when a value is changed in the data.
 ]=]
-function ServerReplion:OnDataChange(callback)
+function ServerReplion:DataChanged(callback)
 	return Graph.connect(self._rootNode, 'onDataChange', { '__root' }, callback)
 end
 
@@ -253,13 +274,13 @@ end
 
 	Connects to a signal that is fired when the value at the given path is changed.
 ]=]
-function ServerReplion:OnChange<V>(path, callback)
+function ServerReplion:Changed<V>(path, callback)
 	return Graph.connect(self._rootNode, 'onChange', path, callback)
 end
 
 --[=[
 	@param path Path
-	@param callback (newValue: any, oldValue: any) -> ()
+	@param callback (newValue: any, oldValue: any?) -> ()
 
 	@return RBXScriptConnection
 
@@ -279,7 +300,7 @@ end
 
 	Connects to a signal that is fired when a value is inserted in the array at the given path.
 ]=]
-function ServerReplion:OnArrayInsert(path, callback)
+function ServerReplion:Inserted(path, callback)
 	return Graph.connect(self._rootNode, 'onArrayInsert', path, callback)
 end
 
@@ -291,14 +312,104 @@ end
 
 	Connects to a signal that is fired when a value is removed in the array at the given path.
 ]=]
-function ServerReplion:OnArrayRemove(path, callback)
+function ServerReplion:Removed(path, callback)
 	return Graph.connect(self._rootNode, 'onArrayRemove', path, callback)
 end
 
 --[=[
-	@param replicateTo ReplicateTo	
+	@param player Player
+
+	Subscribes a single player to this Replion. The player will receive the current data
+	and all future updates until unsubscribed or the Replion is destroyed.
+]=]
+function ServerReplion:Subscribe(player: Player)
+	assert(typeof(player) == 'Instance' and player:IsA('Player'), '"player" must be a Player')
+
+	local replicateTo = self.ReplicateTo
+
+	if replicateTo == 'All' then
+		return
+	end
+
+	if typeof(replicateTo) == 'Instance' then
+		-- already a single player
+		if replicateTo == player then
+			return
+		end
+		self:SetReplicateTo({ replicateTo, player })
+	elseif type(replicateTo) == 'table' then
+		if table.find(replicateTo, player) then
+			return
+		end
+		local newList = table.clone(replicateTo)
+		table.insert(newList, player)
+		self:SetReplicateTo(newList)
+	end
+end
+
+--[=[
+	Subscribes all currently connected players to this Replion.
+	Players who join after this call are NOT automatically added.
+	Use :Replicate() if you want to include future players as well.
+]=]
+function ServerReplion:SubscribeAll()
+	self:SetReplicateTo(Players:GetPlayers())
+end
+
+--[=[
+	@param player Player
+
+	Unsubscribes a single player from this Replion.
+]=]
+function ServerReplion:Unsubscribe(player: Player)
+	assert(typeof(player) == 'Instance' and player:IsA('Player'), '"player" must be a Player')
+
+	local replicateTo = self.ReplicateTo
+
+	if replicateTo == 'All' then
+		local players = Players:GetPlayers()
+		local newList = {}
+		for _, p in players do
+			if p ~= player then
+				table.insert(newList, p)
+			end
+		end
+		self:SetReplicateTo(newList)
+	elseif typeof(replicateTo) == 'Instance' then
+		if replicateTo == player then
+			self:SetReplicateTo({})
+		end
+	elseif type(replicateTo) == 'table' then
+		local index = table.find(replicateTo, player)
+		if not index then
+			return
+		end
+		local newList = table.clone(replicateTo)
+		table.remove(newList, index)
+		self:SetReplicateTo(newList)
+	end
+end
+
+--[=[
+	Unsubscribes all players from this Replion.
+]=]
+function ServerReplion:UnsubscribeAll()
+	self:SetReplicateTo({})
+end
+
+--[=[
+	Replicates this Replion to all current and future players by setting ReplicateTo to `'All'`.
+	Unlike :SubscribeAll(), players who join after this call will also receive the data automatically.
+]=]
+function ServerReplion:Replicate()
+	self:SetReplicateTo('All')
+end
+
+--[=[
+	@param replicateTo ReplicateTo
 
 	Sets the players to which the data should be replicated.
+	@private
 ]=]
 function ServerReplion:SetReplicateTo(replicateTo)
 	assert(
@@ -440,45 +551,27 @@ end
 
 --[=[
 	```lua
-	local newReplion = ReplionServer.new({
-		Channel = 'Data',
-		ReplicateTo = 'All',
-		Data = {
-			Items = {
-				Bow = true,
-			}
-		},
-	})
-
-	newReplion:Update('Items', {
-		Sword = true,
-		Bow = Replion.None
-	})
-
-	newReplion:Update({
-		Level = 20,
-	})
+	newReplion:Update('Items', function(currentItems)
+		return Freeze.Dictionary.merge(currentItems, { Sword = true, Bow = Replion.None })
+	end)
 	```
 
 	@param path Path
-	@param toUpdate { [any]: any }?
+	@param callback (currentValue: V) -> V
 
-	Updates the data with the given table. Only the keys that are different will be sent to the client.
-	If you want to remove a key, set it to `Replion.None`.
-
-	You can update the root data by passing a table as the first argument.
+	Calls `callback` with the current value at `path` and applies the returned table as a merge update.
+	Only the keys that differ from the current value are sent to the client.
+	Set a key to `Replion.None` to remove it.
 ]=]
-function ServerReplion:Update(path, toUpdate)
-	local pathTable = if toUpdate then Utils.getPathTable(path) else nil
-	local pathCurrentValue = if pathTable then Freeze.Dictionary.getIn(self.Data, pathTable) else self.Data
-	local targetTable = toUpdate or path :: _T.Dictionary
+function ServerReplion:Update<V>(path, callback: UpdateCallback<V>)
+	local pathTable = Utils.getPathTable(path)
+	local pathCurrentValue: V = Freeze.Dictionary.getIn(self.Data, pathTable) or ({} :: any)
+
+	local targetTable = callback(pathCurrentValue)
+	assert(type(targetTable) == 'table', 'Update callback must return a table')
 
 	local changedValues = Freeze.Dictionary.filter(targetTable, function(value, key)
-		if not pathCurrentValue then
-			return true
-		end
-
-		return not Freeze.Dictionary.equals(pathCurrentValue[key], value)
+		return not Freeze.Dictionary.equals((pathCurrentValue :: any)[key], value)
 	end)
 
 	local nothingChanged = next(changedValues) == nil
@@ -487,9 +580,7 @@ function ServerReplion:Update(path, toUpdate)
 	end
 
 	local oldData = self.Data
-	local newData = if pathTable
-		then Freeze.Dictionary.mergeIn(self.Data, pathTable, changedValues)
-		else Freeze.Dictionary.merge(self.Data, changedValues)
+	local newData = Freeze.Dictionary.mergeIn(self.Data, pathTable, changedValues)
 
 	self.Data = newData
 
@@ -507,7 +598,6 @@ function ServerReplion:Update(path, toUpdate)
 
 			if i ~= size then
 				isUnordered = true
-
 				break
 			end
 		end
@@ -535,11 +625,7 @@ function ServerReplion:Update(path, toUpdate)
 		return if value == Freeze.None then Utils.SerializedNone else value, if isUnordered then tostring(key) else key
 	end)
 
-	if not pathTable then
-		Network.sendTo(self.ReplicateTo, 'Update', self._packedId, serializedUpdate, nil, isUnordered)
-	else
-		Network.sendTo(self.ReplicateTo, 'Update', self._packedId, path, serializedUpdate, isUnordered)
-	end
+	Network.sendTo(self.ReplicateTo, 'Update', self._packedId, path, serializedUpdate, isUnordered)
 end
 
 --[=[
@@ -862,6 +948,9 @@ function ServerReplion:Destroy()
 	Network.sendTo(self.ReplicateTo, 'Removed', self._packedId)
 
 	table.insert(availableIds, self._id)
+
+	self._afterDestroy:Fire()
+	self._afterDestroy:DisconnectAll()
 end
 
 return ServerReplion

@@ -110,12 +110,12 @@ describe('ClientReplion:_set', function()
 		expect(newReplion:Get('Foo')).toBe(true)
 	end)
 
-	it('should call the OnChange signal', function()
+	it('should call the Changed signal', function()
 		local newReplion = ClientReplion.new({ nil, 'Set', {} })
 
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('Foo', fnMock)
+		newReplion:Changed('Foo', fnMock)
 		newReplion:_set('Foo', true)
 
 		expect(fnMock).toHaveBeenCalledWith(true, nil)
@@ -131,12 +131,12 @@ describe('ClientReplion:_clear', function()
 		expect(newReplion:Get('Array')).toEqual({})
 	end)
 
-	it('should call the OnChange signal', function()
+	it('should call the Changed signal', function()
 		local newReplion = ClientReplion.new({ nil, 'Clear', { Array = { 1, 2, 3 } } })
 
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('Array', fnMock)
+		newReplion:Changed('Array', fnMock)
 		newReplion:_clear('Array')
 
 		expect(fnMock).toHaveBeenCalledWith({}, { 1, 2, 3 })
@@ -173,23 +173,23 @@ describe('ClientReplion:_remove', function()
 	end)
 end)
 
-describe('ClientReplion:OnChange', function()
-	it('should connect the OnChange signal', function()
-		local newReplion = ClientReplion.new({ nil, 'OnChange', {} })
+describe('ClientReplion:Changed', function()
+	it('should connect the Changed signal', function()
+		local newReplion = ClientReplion.new({ nil, 'Changed', {} })
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('Foo', fnMock)
+		newReplion:Changed('Foo', fnMock)
 		newReplion:_set('Foo', true)
 
 		expect(fnMock).toHaveBeenCalledWith(true, nil)
 	end)
 
 	it('should call the callback if an value inside a table changes', function()
-		local newReplion = ClientReplion.new({ nil, 'OnChange', { A = { B = { C = true } } } })
+		local newReplion = ClientReplion.new({ nil, 'Changed', { A = { B = { C = true } } } })
 
 		local fnMock = jest.fn()
 
-		newReplion:OnChange('A', fnMock)
+		newReplion:Changed('A', fnMock)
 
 		newReplion:_set('A.B.C', false)
 		newReplion:_set('A.B', { D = true })
@@ -201,26 +201,26 @@ describe('ClientReplion:OnChange', function()
 	end)
 end)
 
-describe('ClientReplion:OnArrayInsert', function()
+describe('ClientReplion:Inserted', function()
 	it('should call the callback when a value is inserted', function()
-		local newReplion = ClientReplion.new({ nil, 'OnArrayInsert', { Array = { 1, 2, 3 } } })
+		local newReplion = ClientReplion.new({ nil, 'Inserted', { Array = { 1, 2, 3 } } })
 
 		local fnMock = jest.fn()
 
-		newReplion:OnArrayInsert('Array', fnMock)
+		newReplion:Inserted('Array', fnMock)
 		newReplion:_insert('Array', 2, 4)
 
 		expect(fnMock).toHaveBeenCalledWith(4, 2)
 	end)
 end)
 
-describe('ClientReplion:OnArrayRemove', function()
+describe('ClientReplion:Removed', function()
 	it('should call the callback when a value is removed', function()
-		local newReplion = ClientReplion.new({ nil, 'OnArrayRemove', { Array = { 1, 2, 3 } } })
+		local newReplion = ClientReplion.new({ nil, 'Removed', { Array = { 1, 2, 3 } } })
 
 		local fnMock = jest.fn()
 
-		newReplion:OnArrayRemove('Array', fnMock)
+		newReplion:Removed('Array', fnMock)
 		newReplion:_remove('Array', 2)
 
 		expect(fnMock).toHaveBeenCalledWith(2, 2)

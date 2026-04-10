@@ -68,7 +68,7 @@ local Replion = require(path.to.replion)
 Replion.Client:AwaitReplion('Data', function(dataReplion)
 	print('Coins:', dataReplion:Get('Coins'))
 
-	local connection = dataReplion:OnChange('Coins', function(newCoins: number, oldCoins: number)
+	local connection = dataReplion:Changed('Coins', function(newCoins: number, oldCoins: number)
 		print('Coins:', newCoins)
 	end)
 end)
