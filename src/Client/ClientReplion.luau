@@ -17,12 +17,14 @@ export type ClientReplion<D = any> = {
 	_channel: string,
 	_rootNode: Graph.Node?,
 	_beforeDestroy: Signal.Signal<nil>,
+	_afterDestroy: Signal.Signal<nil>,
 
 	new: (serializedReplion: _T.SerializedReplion) -> ClientReplion<D>,
 	BeforeDestroy: (self: ClientReplion<D>, callback: () -> ()) -> Signal.Connection,
+	AfterDestroy: (self: ClientReplion<D>, callback: () -> ()) -> Signal.Connection,
 
-	OnDataChange: (self: ClientReplion<D>, callback: (newData: D, path: _T.Path) -> ()) -> Signal.Connection,
-	OnChange: <T>(
+	DataChanged: (self: ClientReplion<D>, callback: (newData: D, path: _T.Path) -> ()) -> Signal.Connection,
+	Changed: <T>(
 		self: ClientReplion<D>,
 		path: _T.Path,
 		callback: (newValue: T, oldValue: T?) -> ()
@@ -34,8 +36,8 @@ export type ClientReplion<D = any> = {
 		callback: (newValue: T, oldValue: T?) -> ()
 	) -> Signal.Connection,
 
-	OnArrayInsert: (self: ClientReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
-	OnArrayRemove: (self: ClientReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
+	Inserted: (self: ClientReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
+	Removed: (self: ClientReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
 
 	_set: <T>(self: ClientReplion<D>, path: _T.Path, newValue: T) -> T,
 	_update: (self: ClientReplion<D>, path: _T.Path | Dictionary, toUpdate: Dictionary?, isUnordered: boolean?) -> (),
@@ -104,6 +106,7 @@ function ClientReplion.new(serializedReplion)
 		_channel = serializedReplion[2],
 
 		_beforeDestroy = Signal.new(),
+		_afterDestroy = Signal.new(),
 		_rootNode = Graph.createRootNode(),
 	}, ClientReplion) :: any
 
@@ -126,19 +129,30 @@ function ClientReplion:BeforeDestroy(callback)
 end
 
 --[=[
+	@param callback () -> ()
+
+	@return RBXScriptConnection
+
+	Connects to a signal that is fired after the :Destroy() method completes.
+]=]
+function ClientReplion:AfterDestroy(callback)
+	return self._afterDestroy:Connect(callback)
+end
+
+--[=[
 	@param callback (newData: any, path: { string }) -> ()
 
 	@return RBXScriptConnection
 
 	Connects to a signal that is fired when a value is changed in the data.
 ]=]
-function ClientReplion:OnDataChange(callback)
+function ClientReplion:DataChanged(callback)
 	return Graph.connect(self._rootNode, 'onDataChange', '__root', callback)
 end
 
 --[=[
 	```lua
-	replion:OnChange('Coins', function(newValue: any, oldValue: any)
+	replion:Changed('Coins', function(newValue: any, oldValue: any)
 		print(newValue, oldValue)
 	end)
 	```
@@ -150,13 +164,13 @@ end
 
 	This function is called when the value of the path changes.
 ]=]
-function ClientReplion:OnChange<T>(path, callback)
+function ClientReplion:Changed<T>(path, callback)
 	return Graph.connect(self._rootNode, 'onChange', path, callback)
 end
 
 --[=[
 	@param path Path
-	@param callback (newValue: any, oldValue: any) -> ()
+	@param callback (newValue: any, oldValue: any?) -> ()
 
 	@return RBXScriptConnection
 
@@ -178,7 +192,7 @@ end
 
 	Connects to a signal that is fired when a value is inserted in the array at the given path.
 ]=]
-function ClientReplion:OnArrayInsert(path, callback)
+function ClientReplion:Inserted(path, callback)
 	return Graph.connect(self._rootNode, 'onArrayInsert', path, callback)
 end
 
@@ -190,7 +204,7 @@ end
 
 	Connects to a signal that is fired when a value is removed in the array at the given path.
 ]=]
-function ClientReplion:OnArrayRemove(path, callback)
+function ClientReplion:Removed(path, callback)
 	return Graph.connect(self._rootNode, 'onArrayRemove', path, callback)
 end
 
@@ -373,6 +387,9 @@ function ClientReplion:Destroy()
 	self._rootNode = nil
 
 	self.Destroyed = true
+
+	self._afterDestroy:Fire()
+	self._afterDestroy:DisconnectAll()
 end
 
 return ClientReplion

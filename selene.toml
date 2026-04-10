@@ -1,4 +1,4 @@
-std = "selene_definitions"
+std = "lune+roblox"
 
 [lints]
 global_usage = "allow"
