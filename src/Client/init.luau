@@ -12,15 +12,23 @@ type SerializedReplions = { SerializedReplion }
 type WaitList = { { thread: thread, async: boolean? } }
 
 export type ReplionClient = {
-	OnReplionAdded: (self: ReplionClient, callback: (ClientReplion) -> ()) -> Signal.Connection,
-	OnReplionAddedWithTag: (
+	ReplionAdded: (
+		self: ReplionClient,
+		channel: string,
+		callback: (replion: ClientReplion) -> ()
+	) -> Signal.Connection,
+	ReplionAddedWithTag: (
 		self: ReplionClient,
 		tag: string,
 		callback: (replion: ClientReplion) -> ()
 	) -> Signal.Connection,
 
-	OnReplionRemoved: (self: ReplionClient, callback: (replion: ClientReplion) -> ()) -> Signal.Connection,
-	OnReplionRemovedWithTag: (
+	ReplionRemoved: (
+		self: ReplionClient,
+		channel: string,
+		callback: (replion: ClientReplion) -> ()
+	) -> Signal.Connection,
+	ReplionRemovedWithTag: (
 		self: ReplionClient,
 		tag: string,
 		callback: (replion: ClientReplion) -> ()
@@ -106,85 +114,126 @@ end
 
 --[=[
 	@class Client
-	
 	@client
+
+	The client-side manager for all `ClientReplion` instances.
+	Require it once via `Replion.Client`.
+
+	```lua
+	local Replion = require(path.to.Replion)
+
+	Replion.Client:AwaitReplion('PlayerData', function(replion)
+		replion:Observe('Coins', function(coins)
+			print('Coins:', coins)
+		end)
+	end)
+	```
 ]=]
 local Client: ReplionClient = {} :: any
 
 --[=[
-	@param callback (addedReplion: ClientReplion) -> ()
+	Fires when a `ClientReplion` with the given channel is received from the server.
 
-	@return RBXScriptConnection
-
-	Calls the callback when a replion is added.
-]=]
-function Client:OnReplionAdded(callback)
-	return addedSignal:Connect(callback)
-end
-
---[=[
-	@param callback (replion: ClientReplion) -> ()
-
-	@return RBXScriptConnection
-
-	Calls the callback when a replion is removed.
-]=]
-function Client:OnReplionRemoved(callback)
-	return removedSignal:Connect(callback)
-end
-
---[=[
-	@param tag string
-	@param callback (replion: ClientReplion) -> ()
-
-	@return RBXScriptConnection
-
-	Calls the callback when a replion with the given tag is added.
-]=]
-function Client:OnReplionAddedWithTag(tag, callback)
-	return self:OnReplionAdded(function(replion: ClientReplion)
-		local tags: { string }? = replion.Tags
-
-		if tags and table.find(tags, tag) ~= nil then
-			callback(replion)
-		end
+	```lua
+	Replion.Client:ReplionAdded('PlayerData', function(replion)
+		print('PlayerData ready')
 	end)
-end
+	```
 
---[=[
-	@param tag string
-	@param callback (replion: ClientReplion) -> ()
-
-	@return RBXScriptConnection
-
-	Calls the callback when a replion with the given tag is removed.
-]=]
-function Client:OnReplionRemovedWithTag(tag, callback)
-	return self:OnReplionRemoved(function(replion: ClientReplion)
-		local tags: { string }? = replion.Tags
-
-		if tags and table.find(tags, tag) ~= nil then
-			callback(replion)
-		end
-	end)
-end
-
---[=[
 	@param channel string
+	@param callback (replion: ClientReplion) -> ()
+	@return RBXScriptConnection
+]=]
+function Client:ReplionAdded(channel, callback)
+	return addedSignal:Connect(function(replion: ClientReplion)
+		if replion._channel == channel then
+			callback(replion)
+		end
+	end)
+end
 
-	Returns the replion with the given channel.
+--[=[
+	Fires when a `ClientReplion` with the given channel is destroyed (server removed it).
+
+	@param channel string
+	@param callback (replion: ClientReplion) -> ()
+	@return RBXScriptConnection
+]=]
+function Client:ReplionRemoved(channel, callback)
+	return removedSignal:Connect(function(replion: ClientReplion)
+		if replion._channel == channel then
+			callback(replion)
+		end
+	end)
+end
+
+--[=[
+	Fires when a `ClientReplion` that has the given tag is received from the server.
+	Tags are set server-side in `ReplionConfig.Tags`.
+
+	```lua
+	Replion.Client:ReplionAddedWithTag('Player', function(replion)
+		print('Player replion received')
+	end)
+	```
+
+	@param tag string
+	@param callback (replion: ClientReplion) -> ()
+	@return RBXScriptConnection
+]=]
+function Client:ReplionAddedWithTag(tag, callback)
+	return addedSignal:Connect(function(replion: ClientReplion)
+		local tags: { string }? = replion.Tags
+
+		if tags and table.find(tags, tag) ~= nil then
+			callback(replion)
+		end
+	end)
+end
+
+--[=[
+	Fires when a `ClientReplion` with the given tag is destroyed.
+
+	@param tag string
+	@param callback (replion: ClientReplion) -> ()
+	@return RBXScriptConnection
+]=]
+function Client:ReplionRemovedWithTag(tag, callback)
+	return removedSignal:Connect(function(replion: ClientReplion)
+		local tags: { string }? = replion.Tags
+
+		if tags and table.find(tags, tag) ~= nil then
+			callback(replion)
+		end
+	end)
+end
+
+--[=[
+	Returns the `ClientReplion` for `channel` if it has already been received, or `nil`.
+
+	```lua
+	local replion = Replion.Client:GetReplion('PlayerData')
+	```
+
+	@param channel string
+	@return ClientReplion?
 ]=]
 function Client:GetReplion(channel)
 	return cache[channel]
 end
 
 --[=[
+	Yields until the `ClientReplion` for `channel` is received from the server.
+	Optionally times out after `timeout` seconds.
+
+	```lua
+	local replion = Replion.Client:WaitReplion('PlayerData', 10)
+	```
+
 	@param channel string
 	@param timeout number?
-
+	@return ClientReplion
 	@yields
-
-	Yields until the replion with the given channel is added.
 ]=]
 function Client:WaitReplion(channel, timeout)
 	local replion = cache[channel]
@@ -205,14 +254,20 @@ function Client:WaitReplion(channel, timeout)
 end
 
 --[=[
+	Calls `callback` asynchronously when the `ClientReplion` for `channel` is received.
+	If one is already cached, the callback is called immediately.
+	Returns a cancel function.
+
+	```lua
+	local cancel = Replion.Client:AwaitReplion('PlayerData', function(replion)
+		replion:Observe('Coins', updateCoinsUI)
+	end)
+	```
+
 	@param channel string
 	@param callback (replion: ClientReplion) -> ()
 	@param timeout number?
-
 	@return (() -> ())?
-
-	This function will call the callback when a replion with the channel is created.
-	Returns a function that can be called to cancel the wait.
 ]=]
 function Client:AwaitReplion(channel, callback, timeout)
 	local replion = cache[channel]

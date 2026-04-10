@@ -522,11 +522,11 @@ describe('ReplionServer:AwaitReplionFor', function()
 	end)
 end)
 
-describe('ReplionServer:OnReplionAdded', function()
+describe('ReplionServer:ReplionAdded', function()
 	it('should return a Connection', function()
-		local channel = 'OnReplionAdded'
+		local channel = 'ReplionAdded'
 
-		local connection = ReplionServer:OnReplionAdded(function(replionChannel)
+		local connection = ReplionServer:ReplionAdded(function(replionChannel)
 			expect(replionChannel).toBe(channel)
 		end)
 
@@ -535,12 +535,12 @@ describe('ReplionServer:OnReplionAdded', function()
 	end)
 
 	it('should fire the event when a Replion is added', function()
-		local channel = 'OnReplionAdded'
+		local channel = 'ReplionAdded'
 		local fired = false
 
 		local addedReplion
 
-		ReplionServer:OnReplionAdded(function(replionChannel, newReplion)
+		ReplionServer:ReplionAdded(function(replionChannel, newReplion)
 			expect(replionChannel).toBe(channel)
 
 			fired = true
@@ -558,11 +558,11 @@ describe('ReplionServer:OnReplionAdded', function()
 	end)
 end)
 
-describe('ReplionServer:OnReplionRemoved', function()
+describe('ReplionServer:ReplionRemoved', function()
 	it('should return a Connection', function()
-		local channel = 'OnReplionRemoved'
+		local channel = 'ReplionRemoved'
 
-		local connection = ReplionServer:OnReplionRemoved(function(replionChannel)
+		local connection = ReplionServer:ReplionRemoved(function(replionChannel)
 			expect(replionChannel).toBe(channel)
 		end)
 
@@ -571,12 +571,12 @@ describe('ReplionServer:OnReplionRemoved', function()
 	end)
 
 	it('should fire the event when a Replion is removed', function()
-		local channel = 'OnReplionRemoved'
+		local channel = 'ReplionRemoved'
 		local fired = false
 
 		local removedReplion
 
-		ReplionServer:OnReplionRemoved(function(replionChannel, replion)
+		ReplionServer:ReplionRemoved(function(replionChannel, replion)
 			expect(replionChannel).toBe(channel)
 
 			fired = true

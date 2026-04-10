@@ -1,68 +1,85 @@
+--[[
+	Release script for Replion.
+
+	Usage:
+		lune run release major   -- 4.0.0 -> 5.0.0
+		lune run release minor   -- 4.0.0 -> 4.1.0
+		lune run release patch   -- 4.0.0 -> 4.0.1
+
+	What it does:
+		1. Reads the current version from wally.toml
+		2. Bumps the requested part
+		3. Writes the new version back to wally.toml
+		4. Commits the version bump
+		5. Creates an annotated git tag  vX.Y.Z
+		6. Pushes the commit + tag to origin
+]]
+
 local process = require('@lune/process')
 local fs = require('@lune/fs')
 
-local WALLY_TOML = 'wally.toml'
+-- ── helpers ──────────────────────────────────────────────────────────────────
 
-local function fail(msg: string)
-	print(`[release] error: {msg}`)
-	process.exit(1)
-end
-
-local function bump(version: string, kind: string): string
-	local major, minor, patch = string.match(version, '^(%d+)%.(%d+)%.(%d+)$')
-	if not (major and minor and patch) then
-		fail(`Invalid version format: "{version}"`)
+local function run(program: string, args: { string }): string
+	local result = process.exec(program, args, { stdio = 'forward' })
+	if not result.ok then
+		error(`Command failed: {program} {table.concat(args, ' ')}\n{result.stderr}`)
 	end
-
-	local maj = tonumber(major) :: number
-	local min = tonumber(minor) :: number
-	local pat = tonumber(patch) :: number
-
-	if kind == 'major' then
-		return `{maj + 1}.0.0`
-	elseif kind == 'minor' then
-		return `{maj}.{min + 1}.0`
-	elseif kind == 'patch' then
-		return `{maj}.{min}.{pat + 1}`
-	end
-
-	fail(`Unknown release kind "{kind}". Use: patch, minor, major`)
-	return version
+	return result.stdout
 end
 
-local firstArg = if process.args and #process.args > 0 then process.args[1] else nil
-local kind = if firstArg == '--' then process.args[2] else firstArg
-if not kind then
-	fail('Usage: lune run release -- <patch|minor|major>')
+local function readFile(path: string): string
+	return fs.readFile(path)
 end
 
-if not fs.isFile(WALLY_TOML) then
-	fail(`File not found: {WALLY_TOML}`)
+local function writeFile(path: string, content: string)
+	fs.writeFile(path, content)
 end
 
-local content = fs.readFile(WALLY_TOML)
+-- ── version bump ─────────────────────────────────────────────────────────────
 
-local currentVersion = string.match(content, 'version%s*=%s*"([^"]+)"')
-if not currentVersion then
-	fail('Could not find version field in wally.toml')
+local bumpType: string = (process.args[1] or 'patch'):lower()
+
+if bumpType ~= 'major' and bumpType ~= 'minor' and bumpType ~= 'patch' then
+	error(`Unknown bump type "{bumpType}". Use: major | minor | patch`)
 end
 
-local newVersion = bump(currentVersion :: string, kind :: string)
-local tag = `v{newVersion}`
+local wallyPath = 'wally.toml'
+local wallyContent = readFile(wallyPath)
 
-local updated = string.gsub(content, '(version%s*=%s*")[^"]+(")', `%1{newVersion}%2`, 1)
-fs.writeFile(WALLY_TOML, updated)
-
-print(`Bumped {kind}: {currentVersion} -> {newVersion}`)
-
-local commitResult = process.exec('git', { 'commit', '-am', `chore: release {tag}` }, { stdio = 'forward' })
-if commitResult.code ~= 0 then
-	fail('git commit failed')
+-- Extract current version
+local major, minor, patch = wallyContent:match('version = "(%d+)%.(%d+)%.(%d+)"')
+if not major then
+	error('Could not find version in wally.toml')
 end
 
-local tagResult = process.exec('git', { 'tag', tag }, { stdio = 'forward' })
-if tagResult.code ~= 0 then
-	fail('git tag failed')
+major = tonumber(major) :: number
+minor = tonumber(minor) :: number
+patch = tonumber(patch) :: number
+
+if bumpType == 'major' then
+	major += 1
+	minor = 0
+	patch = 0
+elseif bumpType == 'minor' then
+	minor += 1
+	patch = 0
+else
+	patch += 1
 end
 
-print(`Tagged {tag} -- push with: git push && git push --tags`)
+local newVersion = `{major}.{minor}.{patch}`
+local newContent = wallyContent:gsub('version = "%d+%.%d+%.%d+"', `version = "{newVersion}"`, 1)
+
+print(`Bumping version to {newVersion}`)
+writeFile(wallyPath, newContent)
+
+-- ── git commit + tag + push ───────────────────────────────────────────────────
+
+run('git', { 'add', wallyPath })
+run('git', { 'commit', '-m', `chore: release v{newVersion}` })
+run('git', { 'tag', '-a', `v{newVersion}`, '-m', `Release v{newVersion}` })
+run('git', { 'push', 'origin', 'master' })
+run('git', { 'push', 'origin', `v{newVersion}` })
+
+print(`\nReleased v{newVersion} to origin successfully!`)

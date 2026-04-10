@@ -38,12 +38,12 @@ export type ReplionServer = {
 		timeout: number?
 	) -> (() -> ())?,
 
-	OnReplionAdded: <T>(
+	ReplionAdded: <T>(
 		self: ReplionServer,
 		callback: (channel: string, replion: ServerReplion<T>) -> ()
 	) -> Signal.Connection,
 
-	OnReplionRemoved: <T>(
+	ReplionRemoved: <T>(
 		self: ReplionServer,
 		callback: (channel: string, replion: ServerReplion<T>) -> ()
 	) -> Signal.Connection,
@@ -102,11 +102,37 @@ end
 --[=[
 	@class Server
 	@server
+
+	The server-side manager for all `ServerReplion` instances.
+	Require this once at the top of your server scripts via `Replion.Server`.
+
+	```lua
+	local Replion = require(path.to.Replion)
+
+	local playerReplion = Replion.Server.new({
+		Channel = 'PlayerData',
+		ReplicateTo = player,
+		Data = { Coins = 0, Level = 1 },
+	})
+	```
 ]=]
 local Server: ReplionServer = {} :: ReplionServer
 
 --[=[
-	Creates a new Replion.
+	Creates a new `ServerReplion` and immediately replicates it to the players specified in `config.ReplicateTo`.
+
+	```lua
+	local replion = Replion.Server.new({
+		Channel    = 'PlayerData',
+		ReplicateTo = player,           -- Player | { Player } | 'All'
+		Data       = { Coins = 0 },
+		Tags       = { 'Player' },      -- optional
+		DisableAutoDestroy = false,     -- optional (default: false)
+	})
+	```
+
+	@param config ReplionConfig
+	@return ServerReplion
 ]=]
 function Server.new<T>(config: ReplionConfig<T>): ServerReplion<T>
 	local channel: string = assert(config.Channel, 'Channel is required!')
@@ -243,9 +269,15 @@ function Server.new<T>(config: ReplionConfig<T>): ServerReplion<T>
 end
 
 --[=[
-	@param channel string
+	Returns the `ServerReplion` for the given channel.
+	Throws if more than one Replion exists with that channel — use `GetReplionFor` when multiple players each have their own channel.
 
-	Gets a Replion with the given channel. If multiple Replions exist with the same channel, it will throw an error.
+	```lua
+	local sharedReplion = Replion.Server:GetReplion('WorldState')
+	```
+
+	@param channel string
+	@return ServerReplion?
 ]=]
 function Server:GetReplion<T>(channel: string): ServerReplion<T>?
 	local channelCache = replionsCache[channel]
@@ -263,10 +295,15 @@ function Server:GetReplion<T>(channel: string): ServerReplion<T>?
 end
 
 --[=[
+	Returns the `ServerReplion` for the given player and channel.
+
+	```lua
+	local playerReplion = Replion.Server:GetReplionFor(player, 'PlayerData')
+	```
+
 	@param player Player
 	@param channel string
-
-	Returns the first Replion that matches the channel.
+	@return ServerReplion?
 ]=]
 function Server:GetReplionFor<T>(player, channel): ServerReplion<T>?
 	local channelCache = replionsCache[channel]
@@ -283,9 +320,11 @@ function Server:GetReplionFor<T>(player, channel): ServerReplion<T>?
 end
 
 --[=[
-	@param player Player
+	Returns all `ServerReplion` instances that are visible to the given player,
+	including those with `ReplicateTo = 'All'`.
 
-	Returns all replions for the given player. Includes replions that are replicated to "All".
+	@param player Player
+	@return { ServerReplion }
 ]=]
 function Server:GetReplionsFor(player)
 	local playerReplions = {}
@@ -313,12 +352,17 @@ function Server:GetReplionsFor(player)
 end
 
 --[=[
+	Yields the current thread until a `ServerReplion` with `channel` is created, then returns it.
+	Optionally cancels after `timeout` seconds and returns `nil`.
+
+	```lua
+	local replion = Replion.Server:WaitReplion('WorldState', 10)
+	```
+
 	@param channel string
 	@param timeout number?
-
+	@return ServerReplion?
 	@yields
-
-	Wait for a replion with the given channel to be created.
 ]=]
 function Server:WaitReplion<T>(channel, timeout): ServerReplion<T>?
 	local replion = self:GetReplion(channel)
@@ -339,13 +383,14 @@ function Server:WaitReplion<T>(channel, timeout): ServerReplion<T>?
 end
 
 --[=[
+	Yields the current thread until a `ServerReplion` for `player` and `channel` exists.
+	Optionally cancels after `timeout` seconds.
+
 	@param player Player
 	@param channel string
 	@param timeout number?
-
+	@return ServerReplion?
 	@yields
-
-	Wait for a replion to be created for the player.
 ]=]
 function Server:WaitReplionFor<T>(player: Player, channel: string, timeout: number?): ServerReplion<T>?
 	local replion = self:GetReplionFor(player, channel)
@@ -376,14 +421,20 @@ function Server:WaitReplionFor<T>(player: Player, channel: string, timeout: numb
 end
 
 --[=[
+	Calls `callback` asynchronously when a `ServerReplion` with `channel` is created.
+	If one already exists, the callback is called immediately.
+	Returns a cancel function.
+
+	```lua
+	local cancel = Replion.Server:AwaitReplion('WorldState', function(replion)
+		print('World state ready:', replion:Get('Map'))
+	end)
+	```
+
 	@param channel string
 	@param callback (replion: ServerReplion) -> ()
 	@param timeout number?
-
 	@return (() -> ())?
-
-	The callback will be called when the replion with the given id is added.
-	Returns a function that can be called to cancel the wait.
 ]=]
 function Server:AwaitReplion<T>(channel, callback, timeout)
 	local replion: ServerReplion<T>? = self:GetReplion(channel)
@@ -406,15 +457,14 @@ function Server:AwaitReplion<T>(channel, callback, timeout)
 end
 
 --[=[
+	Calls `callback` asynchronously when a `ServerReplion` for `player` and `channel` is created.
+	Returns a cancel function.
+
 	@param player Player
 	@param channel string
 	@param callback (replion: ServerReplion) -> ()
 	@param timeout number?
-
 	@return (() -> ())?
-
-	The callback will be called when the replion with the given id for the given player is added.
-	Returns a function that can be called to cancel the wait.
 ]=]
 function Server:AwaitReplionFor<T>(player, channel, callback, timeout)
 	local replion: ServerReplion<T>? = self:GetReplionFor(player, channel)
@@ -447,24 +497,28 @@ function Server:AwaitReplionFor<T>(player, channel, callback, timeout)
 end
 
 --[=[
+	Fires whenever any `ServerReplion` is created.
+
+	```lua
+	Replion.Server:ReplionAdded(function(channel, replion)
+		print('Replion created:', channel)
+	end)
+	```
+
 	@param callback (channel: string, replion: ServerReplion) -> ()
-
 	@return RBXScriptConnection
-
-	The callback will be called when a replion is added.
 ]=]
-function Server:OnReplionAdded<T>(callback)
+function Server:ReplionAdded<T>(callback)
 	return replionAdded:Connect(callback)
 end
 
 --[=[
+	Fires whenever any `ServerReplion` is destroyed.
+
 	@param callback (channel: string, replion: ServerReplion) -> ()
-
 	@return RBXScriptConnection
-
-	The callback will be called when a replion is removed.
 ]=]
-function Server:OnReplionRemoved<T>(callback)
+function Server:ReplionRemoved<T>(callback)
 	return replionRemoved:Connect(callback)
 end
 

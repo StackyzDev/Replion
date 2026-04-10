@@ -6,6 +6,7 @@ export type Dictionary = { [any]: any }
 export type SerializedReplion = { any }
 
 export type ArrayCallback = <T>(index: number, value: T) -> ()
+export type DictCallback = <T>(key: any, value: T) -> ()
 export type BeforeDestroy<T> = (replion: T, ...any) -> ()
 
 export type ReplicateTo = Player | { Player } | 'All'

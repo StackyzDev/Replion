@@ -23,6 +23,8 @@ export type ServerReplionData<D = any> = {
 	_afterDestroy: Signal.Signal<nil>,
 	_rootNode: Graph.Node?,
 	_replicateToChanged: Signal.Signal<_T.ReplicateTo, _T.ReplicateTo>,
+	_playerSubscribed: Signal.Signal<Player>,
+	_playerUnsubscribed: Signal.Signal<Player>,
 
 	_id: number,
 	_packedId: string,
@@ -47,11 +49,20 @@ export type ServerReplionData<D = any> = {
 	Inserted: (self: ServerReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
 	Removed: (self: ServerReplion<D>, path: _T.Path, callback: _T.ArrayCallback) -> Signal.Connection,
 
+	KeyAdded: (self: ServerReplion<D>, path: _T.Path, callback: _T.DictCallback) -> Signal.Connection,
+	KeyRemoved: (self: ServerReplion<D>, path: _T.Path, callback: _T.DictCallback) -> Signal.Connection,
+
 	Subscribe: (self: ServerReplion<D>, player: Player) -> (),
 	SubscribeAll: (self: ServerReplion<D>) -> (),
 	Unsubscribe: (self: ServerReplion<D>, player: Player) -> (),
 	UnsubscribeAll: (self: ServerReplion<D>) -> (),
 	Replicate: (self: ServerReplion<D>) -> (),
+	GetSubscribers: (self: ServerReplion<D>) -> { Player },
+	IsSubscribed: (self: ServerReplion<D>, player: Player) -> boolean,
+
+	PlayerSubscribed: (self: ServerReplion<D>, callback: (player: Player) -> ()) -> Signal.Connection,
+	PlayerUnsubscribed: (self: ServerReplion<D>, callback: (player: Player) -> ()) -> Signal.Connection,
+	ObserveSubscribers: (self: ServerReplion<D>, callback: (player: Player) -> ()) -> Signal.Connection,
 
 	Set: <T>(self: ServerReplion<D>, path: _T.Path, newValue: T) -> T,
 	Update: <V>(self: ServerReplion<D>, path: _T.Path, callback: UpdateCallback<V>) -> (),
@@ -63,6 +74,9 @@ export type ServerReplionData<D = any> = {
 	Remove: <T>(self: ServerReplion<D>, path: _T.Path, index: number?) -> T,
 	Clear: (self: ServerReplion<D>, path: _T.Path) -> (),
 	Find: <T>(self: ServerReplion<D>, path: _T.Path, value: T) -> (number?, T?),
+
+	GetKeys: <K>(self: ServerReplion<D>, path: _T.Path) -> { K },
+	GetValues: <V>(self: ServerReplion<D>, path: _T.Path) -> { V },
 
 	Get: <T>(self: ServerReplion<D>, path: _T.Path) -> T?,
 	GetExpect: <T>(self: ServerReplion<D>, path: _T.Path, message: string?) -> T,
@@ -84,6 +98,70 @@ export type ReplionConfig<D = any> = {
 
 	Tags: { string }?,
 }
+
+-- Used by Set: walks each segment of pathTable and fires Added/Removed when a
+-- key appears or disappears at that level (covers intermediate table creation).
+local function fireDictKeyEvents(rootNode: Graph.Node, pathTable: { any }, oldData: any, newData: any)
+	local oldCursor = oldData
+	local newCursor = newData
+
+	for i = 1, #pathTable do
+		local key = pathTable[i]
+
+		local parentPath: any = if i == 1 then '__root' else table.move(pathTable, 1, i - 1, 1, table.create(i - 1))
+
+		local oldIsTable = type(oldCursor) == 'table'
+		local newIsTable = type(newCursor) == 'table'
+
+		if oldIsTable or newIsTable then
+			local hadKey = oldIsTable and (oldCursor :: any)[key] ~= nil
+			local hasKey = newIsTable and (newCursor :: any)[key] ~= nil
+
+			if not hadKey and hasKey then
+				Graph.fireEvent(rootNode, 'onDictKeyAdded', parentPath, key, (newCursor :: any)[key])
+			elseif hadKey and not hasKey then
+				Graph.fireEvent(rootNode, 'onDictKeyRemoved', parentPath, key, (oldCursor :: any)[key])
+			end
+		end
+
+		oldCursor = if oldIsTable then (oldCursor :: any)[key] else nil
+		newCursor = if newIsTable then (newCursor :: any)[key] else nil
+	end
+end
+
+-- Used by Update: fires Added/Removed for keys that appeared or disappeared
+-- inside the dict located at pathTable (the merge target).
+local function fireDictChildKeyEvents(rootNode: Graph.Node, pathTable: { any }, oldData: any, newData: any)
+	local eventPath: any = if #pathTable == 0 then '__root' else pathTable
+
+	local oldDict = if #pathTable == 0 then oldData else Freeze.Dictionary.getIn(oldData, pathTable)
+	local newDict = if #pathTable == 0 then newData else Freeze.Dictionary.getIn(newData, pathTable)
+
+	local oldIsTable = type(oldDict) == 'table'
+	local newIsTable = type(newDict) == 'table'
+
+	if not oldIsTable and not newIsTable then
+		return
+	end
+
+	-- Check for added keys (present in new, absent in old)
+	if newIsTable then
+		for key, value in newDict :: any do
+			if not oldIsTable or (oldDict :: any)[key] == nil then
+				Graph.fireEvent(rootNode, 'onDictKeyAdded', eventPath, key, value)
+			end
+		end
+	end
+
+	-- Check for removed keys (present in old, absent in new)
+	if oldIsTable then
+		for key, value in oldDict :: any do
+			if not newIsTable or (newDict :: any)[key] == nil then
+				Graph.fireEvent(rootNode, 'onDictKeyRemoved', eventPath, key, value)
+			end
+		end
+	end
+end
 
 local ID_LIMIT = 65535
 local MIN_IDS_TO_RECYCLE = 16
@@ -151,9 +229,24 @@ local warnsSent = {}
 ]=]
 
 --[=[
-	@class ServerReplion	
-
+	@class ServerReplion
 	@server
+
+	Holds state for a single channel and handles replication to clients.
+	Created via `Replion.Server.new(config)`.
+
+	```lua
+	local replion = Replion.Server.new({
+		Channel    = 'PlayerData',
+		ReplicateTo = player,
+		Data       = { Coins = 0, Inventory = {} },
+	})
+
+	replion:Set('Coins', 100)
+	replion:Update('Inventory', function(inv)
+		return Freeze.Dictionary.merge(inv, { Sword = true })
+	end)
+	```
 ]=]
 local ServerReplion = {}
 ServerReplion.__index = ServerReplion
@@ -192,6 +285,8 @@ function ServerReplion.new<D>(config: ReplionConfig<D>): ServerReplion<D>
 		_afterDestroy = Signal.new(),
 		_rootNode = Graph.createRootNode(),
 		_replicateToChanged = Signal.new(),
+		_playerSubscribed = Signal.new(),
+		_playerUnsubscribed = Signal.new(),
 	}, ServerReplion) :: any
 
 	Network.sendTo(replicateTo, 'Added', self:_serialize())
@@ -235,58 +330,74 @@ function ServerReplion:_serialize(): _T.SerializedReplion
 end
 
 --[=[
-	@param callback (replion: ServerReplion) -> ()
+	Fires synchronously just before the Replion is destroyed — useful for cleanup that
+	still needs access to `self.Data` or subscriptions.
 
+	@param callback () -> ()
 	@return RBXScriptConnection
-
-	Connects to a signal that is fired when the :Destroy() method is called.
 ]=]
 function ServerReplion:BeforeDestroy(callback)
 	return self._beforeDestroy:Connect(callback)
 end
 
 --[=[
+	Fires after the Replion has been fully destroyed and all connections cleaned up.
+
 	@param callback () -> ()
-
 	@return RBXScriptConnection
-
-	Connects to a signal that is fired after the :Destroy() method completes.
 ]=]
 function ServerReplion:AfterDestroy(callback)
 	return self._afterDestroy:Connect(callback)
 end
 
 --[=[
-	@param callback (newData: any, path: Path) -> ()
+	Fires whenever any part of the Replion's data changes.
+	The callback receives the entire new data table and the path that was changed.
 
+	```lua
+	replion:DataChanged(function(newData, path)
+		print('Data changed at', table.concat(path, '.'))
+	end)
+	```
+
+	@param callback (newData: any, path: { string }) -> ()
 	@return RBXScriptConnection
-
-	Connects to a signal that is fired when a value is changed in the data.
 ]=]
 function ServerReplion:DataChanged(callback)
 	return Graph.connect(self._rootNode, 'onDataChange', { '__root' }, callback)
 end
 
 --[=[
-	@param path Path
-	@param callback (newValue: any, oldValue: any) -> ()
-	
-	@return RBXScriptConnection
+	Fires whenever the value at `path` changes.
 
-	Connects to a signal that is fired when the value at the given path is changed.
+	```lua
+	replion:Changed('Coins', function(newCoins: number, oldCoins: number)
+		print('Coins changed from', oldCoins, 'to', newCoins)
+	end)
+	```
+
+	@param path Path
+	@param callback (newValue: T, oldValue: T) -> ()
+	@return RBXScriptConnection
 ]=]
 function ServerReplion:Changed<V>(path, callback)
 	return Graph.connect(self._rootNode, 'onChange', path, callback)
 end
 
 --[=[
+	Fires immediately with the current value at `path`, then fires on every subsequent change.
+	Useful for initializing UI or state that must always reflect the current value.
+
+	```lua
+	replion:Observe('Coins', function(coins: number, oldCoins: number?)
+		-- oldCoins is nil on the first call
+		print('Coins:', coins)
+	end)
+	```
+
 	@param path Path
-	@param callback (newValue: any, oldValue: any?) -> ()
-
+	@param callback (newValue: T, oldValue: T?) -> ()
 	@return RBXScriptConnection
-
-	Connects to a signal that is fired immediately with the current value at the given path,
-	and then whenever the value at the given path is changed.
 ]=]
 function ServerReplion:Observe<V>(path, callback)
 	task.spawn(function()
@@ -297,27 +408,110 @@ function ServerReplion:Observe<V>(path, callback)
 end
 
 --[=[
+	Fires when a value is inserted into the array at `path` via `:Insert`.
+
+	```lua
+	replion:Inserted('Queue', function(index: number, value: any)
+		print('Inserted', value, 'at index', index)
+	end)
+	```
+
 	@param path Path
-	@param callback (index: number, value: any) -> ()
-
+	@param callback (index: number, value: T) -> ()
 	@return RBXScriptConnection
-
-	Connects to a signal that is fired when a value is inserted in the array at the given path.
 ]=]
 function ServerReplion:Inserted(path, callback)
 	return Graph.connect(self._rootNode, 'onArrayInsert', path, callback)
 end
 
 --[=[
+	Fires when a value is removed from the array at `path` via `:Remove`.
+
+	```lua
+	replion:Removed('Queue', function(index: number, value: any)
+		print('Removed', value, 'at index', index)
+	end)
+	```
+
 	@param path Path
-	@param callback (index: number, value: any) -> ()
-
+	@param callback (index: number, value: T) -> ()
 	@return RBXScriptConnection
-
-	Connects to a signal that is fired when a value is removed in the array at the given path.
 ]=]
 function ServerReplion:Removed(path, callback)
 	return Graph.connect(self._rootNode, 'onArrayRemove', path, callback)
+end
+
+--[=[
+	Fires when a new key is introduced to the dictionary at `path`.
+	This fires for keys added via `:Update` **and** for intermediate tables created by `:Set` on a deep path.
+
+	```lua
+	replion:KeyAdded('Inventory', function(key: string, value: any)
+		print('New item:', key, value)
+	end)
+	```
+
+	@param path Path
+	@param callback (key: any, value: T) -> ()
+	@return RBXScriptConnection
+]=]
+function ServerReplion:KeyAdded(path, callback)
+	return Graph.connect(self._rootNode, 'onDictKeyAdded', path, callback)
+end
+
+--[=[
+	Fires when a key is removed from the dictionary at `path`.
+	This fires for keys removed via `:Update` (set to `Replion.None`) **and**
+	for tables deleted by `:Set` on a deep path.
+
+	```lua
+	replion:KeyRemoved('Inventory', function(key: string, value: any)
+		print('Removed item:', key, 'was', value)
+	end)
+	```
+
+	@param path Path
+	@param callback (key: any, value: T) -> ()
+	@return RBXScriptConnection
+]=]
+function ServerReplion:KeyRemoved(path, callback)
+	return Graph.connect(self._rootNode, 'onDictKeyRemoved', path, callback)
+end
+
+--[=[
+	Returns all keys of the dictionary at `path`. Returns an empty table if the value is not a table.
+
+	```lua
+	local keys = replion:GetKeys('Inventory') -- { 'Sword', 'Bow' }
+	```
+
+	@param path Path
+	@return { K }
+]=]
+function ServerReplion:GetKeys<K>(path): { K }
+	local dict = self:Get(path)
+	if type(dict) ~= 'table' then
+		return {}
+	end
+	return table.clone(Freeze.Dictionary.keys(dict)) :: any
+end
+
+--[=[
+	Returns all values of the dictionary at `path`. Returns an empty table if the value is not a table.
+
+	```lua
+	local values = replion:GetValues('Inventory') -- { true, true }
+	```
+
+	@param path Path
+	@return { V }
+]=]
+function ServerReplion:GetValues<V>(path): { V }
+	local dict = self:Get(path)
+	if type(dict) ~= 'table' then
+		return {}
+	end
+	return table.clone(Freeze.Dictionary.values(dict)) :: any
 end
 
 --[=[
@@ -410,6 +604,84 @@ function ServerReplion:Replicate()
 end
 
 --[=[
+	Returns all players currently subscribed to this Replion as a table.
+	If ReplicateTo is `'All'`, returns all currently connected players.
+]=]
+function ServerReplion:GetSubscribers(): { Player }
+	local replicateTo = self.ReplicateTo
+
+	if replicateTo == 'All' then
+		return Players:GetPlayers()
+	elseif type(replicateTo) == 'table' then
+		return table.clone(replicateTo)
+	elseif typeof(replicateTo) == 'Instance' and replicateTo:IsA('Player') then
+		return { replicateTo }
+	end
+
+	return {}
+end
+
+--[=[
+	@param player Player
+
+	Returns whether the given player is currently subscribed to this Replion.
+]=]
+function ServerReplion:IsSubscribed(player: Player): boolean
+	assert(typeof(player) == 'Instance' and player:IsA('Player'), '"player" must be a Player')
+
+	local replicateTo = self.ReplicateTo
+
+	if replicateTo == 'All' then
+		return player:IsDescendantOf(Players)
+	elseif typeof(replicateTo) == 'Instance' then
+		return replicateTo == player
+	elseif type(replicateTo) == 'table' then
+		return table.find(replicateTo, player) ~= nil
+	end
+
+	return false
+end
+
+--[=[
+	@param callback (player: Player) -> ()
+
+	@return RBXScriptConnection
+
+	Calls the callback when a player subscribes to this Replion.
+]=]
+function ServerReplion:PlayerSubscribed(callback)
+	return self._playerSubscribed:Connect(callback)
+end
+
+--[=[
+	@param callback (player: Player) -> ()
+
+	@return RBXScriptConnection
+
+	Calls the callback when a player unsubscribes from this Replion.
+]=]
+function ServerReplion:PlayerUnsubscribed(callback)
+	return self._playerUnsubscribed:Connect(callback)
+end
+
+--[=[
+	@param callback (player: Player) -> ()
+
+	@return RBXScriptConnection
+
+	Calls the callback immediately for each currently subscribed player,
+	then connects to future subscriptions.
+]=]
+function ServerReplion:ObserveSubscribers(callback)
+	task.defer(function()
+		for _, player in self:GetSubscribers() do
+			callback(player)
+		end
+	end)
+	return self._playerSubscribed:Connect(callback)
+end
+
+--[=[
 	@param replicateTo ReplicateTo
 
 	Sets the players to which the data should be replicated.
@@ -445,6 +717,7 @@ function ServerReplion:SetReplicateTo(replicateTo)
 		end
 
 		Network.sendTo(player, 'Removed', self._packedId)
+		self._playerUnsubscribed:Fire(player)
 	end
 
 	-- Send Added event for new players that are not in the old list
@@ -454,6 +727,7 @@ function ServerReplion:SetReplicateTo(replicateTo)
 		end
 
 		Network.sendTo(player, 'Added', self:_serialize())
+		self._playerSubscribed:Fire(player)
 	end
 
 	self.ReplicateTo = replicateTo
@@ -463,17 +737,29 @@ function ServerReplion:SetReplicateTo(replicateTo)
 end
 
 --[=[
+	Sets the value at `path` and replicates the change to all subscribed clients.
+	Returns the new value.
+
+	Use `Replion.None` as the value to remove a key from its parent dictionary.
+	When setting a deep path (e.g. `'Inventory.Swords.Current'`), any intermediate
+	tables that are created or destroyed will fire `KeyAdded`/`KeyRemoved` events accordingly.
+
+	:::tip
+	When only some keys inside a table change, prefer `:Update` — it sends only the diff,
+	reducing bandwidth.
+	:::
+
 	```lua
-	local newCoins: number = Replion:Set('Coins', 79)
-	print(newCoins) --> 79
+	replion:Set('Coins', 100)
+	replion:Set('Inventory.Sword', true)
+
+	-- Remove a key
+	replion:Set('Inventory.OldItem', Replion.None)
 	```
 
-	@param path Path | { [any] : any }
+	@param path Path
 	@param newValue T
-
-	Sets the value at the given path to the given value.
-	If you're updating a table is recommended to use [ServerReplion:Update] instead of `ServerReplion:Set` 
-	to avoid sending unnecessary data to the client.
+	@return T
 ]=]
 function ServerReplion:Set<T>(path, newValue: T): T
 	local pathTable = Utils.getPathTable(path)
@@ -540,8 +826,10 @@ function ServerReplion:Set<T>(path, newValue: T): T
 		end
 	end
 
-	local newData = Freeze.Dictionary.setIn(self.Data, pathTable, newValue)
 	local oldData = self.Data
+	local newData = if newValue == Freeze.None
+		then Freeze.Dictionary.removeIn(self.Data, pathTable)
+		else Freeze.Dictionary.setIn(self.Data, pathTable, newValue)
 
 	self.Data = newData
 
@@ -549,23 +837,29 @@ function ServerReplion:Set<T>(path, newValue: T): T
 
 	Graph.fireEvent(self._rootNode, 'onDataChange', '__root', newData, pathTable)
 	Graph.fireChange(self._rootNode, pathTable, newData, oldData)
+	fireDictKeyEvents(self._rootNode, pathTable, oldData, newData)
 
 	return newValue
 end
 
 --[=[
+	Calls `callback` with the current value at `path`. The callback must return a table
+	whose entries will be merged into the existing dictionary. Only changed keys are sent
+	to the client, making this more bandwidth-efficient than `:Set` for table updates.
+
+	Set a key to `Replion.None` in the returned table to remove it.
+
 	```lua
-	newReplion:Update('Items', function(currentItems)
-		return Freeze.Dictionary.merge(currentItems, { Sword = true, Bow = Replion.None })
+	replion:Update('Inventory', function(inv)
+		return Freeze.Dictionary.merge(inv, {
+			Sword = true,
+			OldItem = Replion.None,
+		})
 	end)
 	```
 
 	@param path Path
 	@param callback (currentValue: V) -> V
-
-	Calls `callback` with the current value at `path` and applies the returned table as a merge update.
-	Only the keys that differ from the current value are sent to the client.
-	Set a key to `Replion.None` to remove it.
 ]=]
 function ServerReplion:Update<V>(path, callback: UpdateCallback<V>)
 	local pathTable = Utils.getPathTable(path)
@@ -584,12 +878,25 @@ function ServerReplion:Update<V>(path, callback: UpdateCallback<V>)
 	end
 
 	local oldData = self.Data
-	local newData = Freeze.Dictionary.mergeIn(self.Data, pathTable, changedValues)
+
+	-- Apply changes: set/remove each key individually to avoid relying on
+	-- Freeze.None singleton identity across module reloads.
+	local newData = self.Data
+	for key, value in changedValues do
+		local keyPath = table.move(pathTable, 1, #pathTable, 1, table.create(#pathTable + 1))
+		keyPath[#keyPath + 1] = key
+		if value == Freeze.None then
+			newData = Freeze.Dictionary.removeIn(newData, keyPath)
+		else
+			newData = Freeze.Dictionary.setIn(newData, keyPath, value)
+		end
+	end
 
 	self.Data = newData
 
 	Graph.fireEvent(self._rootNode, 'onDataChange', '__root', newData, pathTable)
 	Graph.fireChange(self._rootNode, pathTable, newData, oldData)
+	fireDictChildKeyEvents(self._rootNode, pathTable, oldData, newData)
 
 	-- Fix unordered arrays
 	local arraySize = table.maxn(changedValues)
@@ -633,14 +940,15 @@ function ServerReplion:Update<V>(path, callback: UpdateCallback<V>)
 end
 
 --[=[
+	Adds `amount` to the number at `path` and returns the new value.
+
 	```lua
-	local newCoins: number = Replion:Increase('Coins', 20)
+	local newCoins = replion:Increase('Coins', 10) -- adds 10
 	```
 
 	@param path Path
 	@param amount number
-
-	Increases the value at the given path by the given amount.
+	@return number
 ]=]
 function ServerReplion:Increase(path, amount)
 	assert(type(amount) == 'number', `"amount" expected number, got {type(amount)}`)
@@ -670,44 +978,36 @@ function ServerReplion:Increase(path, amount)
 end
 
 --[=[
+	Subtracts `amount` from the number at `path` and returns the new value.
+
 	```lua
-	local newCoins: number = Replion:Decrease('Coins', 20)
+	local newCoins = replion:Decrease('Coins', 5) -- subtracts 5
 	```
 
 	@param path Path
 	@param amount number
-
-	Decreases the value at the given path by the given amount.
+	@return number
 ]=]
 function ServerReplion:Decrease(path, amount)
 	return self:Increase(path, -amount)
 end
 
 --[=[
-	```lua
-	local newReplion = ReplionServer.new({
-		Channel = 'Data',
-		ReplicateTo = player,
-		Data = {
-			Items = {
-				'Bow'
-			}
-		}
-	})
+	Inserts `value` into the array at `path`. If `index` is provided the value is
+	inserted at that position (shifting later elements); otherwise it is appended.
 
-	newReplion:Insert('Items', 'Sword')
-	newReplion:Insert('Items', 'Diamond Sword', 1)
+	:::note Arrays only
+	Only works on array-style tables.
+	:::
+
+	```lua
+	replion:Insert('Queue', 'PlayerA')        -- append
+	replion:Insert('Queue', 'VIP', 1)         -- prepend
 	```
 
 	@param path Path
 	@param value T
 	@param index number?
-
-	:::note Arrays only
-	This only works on Arrays.
-
-	Inserts a value into the array at the given path, and returns the index and value. 
-	If no index is given, it will insert the value at the end of the array.
 ]=]
 function ServerReplion:Insert<T>(path, value: T, index)
 	local pathTable = Utils.getPathTable(path)
@@ -731,29 +1031,21 @@ function ServerReplion:Insert<T>(path, value: T, index)
 end
 
 --[=[
-	```lua
-	local newReplion = ReplionServer.new({
-		Channel = 'Data',
-		ReplicateTo = player,
-		Data = {
-			Items = {
-				'Bow'
-			}
-		}
-	})
+	Removes and returns the value at `index` in the array at `path`.
+	If `index` is omitted, removes and returns the last element.
 
-	local item: string = newReplion:Remove('Items')
-	print(item) --> 'Bow'
+	:::note Arrays only
+	Only works on array-style tables.
+	:::
+
+	```lua
+	local item = replion:Remove('Queue')        -- pop last
+	local first = replion:Remove('Queue', 1)    -- pop first
 	```
 
 	@param path Path
 	@param index number?
-
-	:::note Arrays only
-	This only works on Arrays.
-
-	Removes a value from the array at the given path, and returns the value.
-	If no index is given, it will remove the value at the end of the array.
+	@return T
 ]=]
 function ServerReplion:Remove<T>(path, index): T
 	local pathTable = Utils.getPathTable(path)
@@ -781,28 +1073,14 @@ function ServerReplion:Remove<T>(path, index): T
 end
 
 --[=[
+	Empties the table at `path`. No-ops if already empty.
+
 	```lua
-	local newReplion = ReplionServer.new({
-		Channel = 'Data',
-		ReplicateTo = player,
-		Data = {
-			Items = {
-				'Bow'
-			}
-		}
-	})
-
-	newReplion:Clear('Items')
-
-	print(newReplion:Get('Items')) --> {}
+	replion:Clear('Queue')
+	print(replion:Get('Queue')) --> {}
 	```
 
 	@param path Path
-
-	:::note Arrays only
-	This only works on Arrays.
-
-	Clears the array at the given path.
 ]=]
 function ServerReplion:Clear(path)
 	local array = self:GetExpect(path, `"{Utils.getPathString(path)}" is not a valid path!`)
@@ -825,28 +1103,20 @@ function ServerReplion:Clear(path)
 end
 
 --[=[
-	```lua
-	local newReplion = ReplionServer.new({
-		Channel = 'Data',
-		ReplicateTo = player,
-		Data = {
-			Items = {
-				'Bow'
-			}
-		}
-	})
+	Searches the array at `path` for `value` and returns its index and the value.
+	Returns `nil, nil` if not found.
 
-	local index: number?, item: string? = newReplion:Find('Items', 'Bow')
-	print(index, item) --> 1, 'Bow'
+	:::note Arrays only
+	Only works on array-style tables.
+	:::
+
+	```lua
+	local index, item = replion:Find('Queue', 'PlayerA')
 	```
 
 	@param path Path
 	@param value T
-
-	:::note Arrays only
-	This only works on Arrays.
-
-	Try to find the value in the array at the given path, and returns the index and value.
+	@return (number?, T?)
 ]=]
 function ServerReplion:Find<T>(path, value: T): (number?, T?)
 	local array: { T }? = self:Get(path)
@@ -863,13 +1133,16 @@ function ServerReplion:Find<T>(path, value: T): (number?, T?)
 end
 
 --[=[
+	Returns the value at `path`, or `nil` if the path does not exist.
+	Use `:GetExpect` when the value is required.
+
 	```lua
-	local coins: number? = Replion:Get('Coins')
+	local coins: number? = replion:Get('Coins')
+	local sword: boolean? = replion:Get('Inventory.Sword')
 	```
 
 	@param path Path
-
-	Returns the value at the given path.
+	@return T?
 ]=]
 function ServerReplion:Get<T>(path): T?
 	assert(path, 'Path is required!')
@@ -905,18 +1178,18 @@ function ServerReplion:Get<T>(path): T?
 end
 
 --[=[
+	Same as `:Get` but throws if the value is `nil`.
+	Provide an optional custom error message as the second argument.
+
 	```lua
-	local coins: number = Replion:GetExpect('Coins')
-	local gems: number = Replion:GetExpect('Gems', 'Gems does not exist!')
+	local coins: number = replion:GetExpect('Coins')
+	local gems: number = replion:GetExpect('Gems', 'Player has no Gems!')
 	```
 
 	@param path Path
 	@param message string?
-
-	@error "Invalid path" -- This error is thrown when the path does not have a value.
-
-	Same as `Replion:Get`, but throws an error if the path does not have a value.
-	You can set a custom error message by passing it as the second argument.
+	@return T
+	@error "path is not a valid path" -- Thrown when the value is nil.
 ]=]
 function ServerReplion:GetExpect<T>(path, message): T
 	assert(path, 'Path is required!')
@@ -932,8 +1205,8 @@ function ServerReplion:GetExpect<T>(path, message): T
 end
 
 --[=[
-	Disconnects all signals and send a Destroy event to the ReplicateTo.
-	You cannot use a Replion after destroying it, this will throw an error.
+	Destroys the Replion, disconnects all signals, and notifies all subscribed
+	clients to remove their local copy. No-ops if already destroyed.
 ]=]
 function ServerReplion:Destroy()
 	if self.Destroyed then
@@ -944,6 +1217,8 @@ function ServerReplion:Destroy()
 	self._beforeDestroy:DisconnectAll()
 
 	self._replicateToChanged:Destroy()
+	self._playerSubscribed:Destroy()
+	self._playerUnsubscribed:Destroy()
 	Graph.destroyRootNode(self._rootNode)
 
 	self._rootNode = nil
